@@ -157,9 +157,10 @@ class Pipeline:
             t_deepen = time.perf_counter() - t3
             if deepened:
                 deepened_ids = [d.id for d in deepened]
-                # Replace original evidence entries with deepened versions for synthesis-2
                 deepened_by_id = {d.id: d for d in deepened}
+                # Replace in synth_input (next-pass context) AND in the user-visible evidence list
                 synth_input2 = [deepened_by_id.get(e.id, e) for e in synth_input]
+                evidence = [deepened_by_id.get(e.id, e) for e in evidence]
                 t4 = time.perf_counter()
                 synth = await self.llm.synthesize(question, synth_input2)
                 t_synth2 = time.perf_counter() - t4
@@ -356,6 +357,7 @@ class Pipeline:
                        "deepen_seconds": round(t_deepen, 2)}
                 deepened_by_id = {d.id: d for d in deepened}
                 synth_input2 = [deepened_by_id.get(e.id, e) for e in synth_input]
+                evidence = [deepened_by_id.get(e.id, e) for e in evidence]
                 yield {"type": "status", "stage": "refining_with_full_text"}
                 t4 = time.perf_counter()
                 async for ev in self.llm.synthesize_stream(question, synth_input2):
