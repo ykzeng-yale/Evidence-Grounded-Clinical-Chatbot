@@ -146,12 +146,26 @@ const escapeHtml = s => (s ?? "").toString()
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
   .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 
-// Linkify citation tags like [PMID:12345], [NCT12345], [WEB:1], [PMC:PMC123], [DOI:...]
+// Linkify citation tags. Claude writes them in two forms in practice:
+//   colon form  : [PMID:12345]   [NCT:NCT01234567]   [PMC:PMC11227881]   [DOI:10.1/abc]   [ARXIV:2410.08034]
+//   short form  : [NCT01234567]  [PMC11227881]
+// We accept both. Anything not matching a known scheme is left as plain text.
 function linkifyCitations(text) {
   if (!text) return "";
   return escapeHtml(text).replace(
-    /\[(PMID|NCT|PMC|DOI|WEB|EPMC):([^\]\s]+)\]/g,
-    (_, kind, id) => `<a class="cite" data-cite="${kind}:${id}" href="#cite-${kind}-${id.replace(/[^A-Za-z0-9]/g,'_')}">[${kind}:${id}]</a>`
+    /\[((?:PMID|NCT|PMC|DOI|WEB|EPMC|ARXIV|PCLIP):[^\]\s]+|NCT\d{6,}|PMC\d{4,})\]/g,
+    (match, ref) => {
+      let kind, id;
+      if (ref.includes(":")) {
+        const i = ref.indexOf(":");
+        kind = ref.slice(0, i);
+        id   = ref.slice(i + 1);
+      } else if (ref.startsWith("NCT")) { kind = "NCT"; id = ref; }
+      else if (ref.startsWith("PMC"))   { kind = "PMC"; id = ref; }
+      else { return match; }
+      const safeId = id.replace(/[^A-Za-z0-9]/g, "_");
+      return `<a class="cite" data-cite="${kind}:${id}" href="#cite-${kind}-${safeId}">[${kind}:${id}]</a>`;
+    }
   );
 }
 
