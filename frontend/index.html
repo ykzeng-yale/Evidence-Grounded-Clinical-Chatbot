@@ -24,6 +24,7 @@
   .source-PubMed       { background:#dbeafe; color:#1e40af; }
   .source-ClinicalTrialsgov { background:#dcfce7; color:#166534; }
   .source-EuropePMC    { background:#fce7f3; color:#9d174d; }
+  .source-Paperclip    { background:#ede9fe; color:#5b21b6; }
   .source-WebSearch    { background:#fef3c7; color:#92400e; }
   .conf-high     { background:#dcfce7; color:#166534; }
   .conf-moderate { background:#fef3c7; color:#92400e; }
@@ -71,10 +72,18 @@
     </div>
 
     <div class="flex items-center justify-between mt-4 gap-3 flex-wrap">
-      <div class="flex items-center gap-3 text-xs text-slate-500">
-        <label class="inline-flex items-center gap-1 cursor-pointer">
+      <div class="flex items-center gap-x-4 gap-y-1 text-xs text-slate-500 flex-wrap">
+        <label class="inline-flex items-center gap-1 cursor-pointer" title="Use Claude Haiku to rerank retrieved papers by clinical relevance before synthesis.">
+          <input type="checkbox" id="rerank" checked class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+          Rerank (Claude)
+        </label>
+        <label class="inline-flex items-center gap-1 cursor-pointer" title="After first synthesis, fetch full text via Firecrawl for top citations and refine.">
+          <input type="checkbox" id="deepen" checked class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+          Deepen full text (Firecrawl)
+        </label>
+        <label class="inline-flex items-center gap-1 cursor-pointer" title="Add Tavily web search for FDA / guidelines.">
           <input type="checkbox" id="webSearch" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
-          Include FDA/guideline web search
+          Web search
         </label>
         <label class="inline-flex items-center gap-1 cursor-pointer">
           <input type="checkbox" id="useCache" checked class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
@@ -182,15 +191,34 @@ function ask() {
   const params = new URLSearchParams({
     q,
     use_web_search: $("webSearch").checked ? "true" : "false",
+    rerank: $("rerank").checked ? "true" : "false",
+    deepen: $("deepen").checked ? "true" : "false",
     use_cache: $("useCache").checked ? "true" : "false",
   });
   evtSource = new EventSource(`/api/ask/stream?${params.toString()}`);
 
   evtSource.addEventListener("status", (e) => {
     const d = JSON.parse(e.data);
-    const map = { reformulating:"Reformulating query…", retrieving:"Searching PubMed, ClinicalTrials.gov, Europe PMC…",
-                  synthesizing:"Synthesizing answer with Claude…", cache_hit:"Cache hit — replaying answer…" };
+    const map = {
+      reformulating:"Reformulating query…",
+      retrieving: d.sources ? "Searching " + d.sources.join(", ") + "…" : "Retrieving…",
+      reranking:"Reranking with Claude Haiku…",
+      synthesizing:"Synthesizing answer with Claude…",
+      deepening_full_text:"Fetching full-text via Firecrawl…",
+      refining_with_full_text:"Refining answer with full-text Methods/Results…",
+      cache_hit_exact:"Cache hit (exact) — replaying answer…",
+      cache_hit_semantic: d.similarity ? `Cache hit (semantic, sim=${d.similarity.toFixed(3)}) — replaying…` : "Semantic cache hit…",
+    };
     $("statusText").textContent = map[d.stage] || d.stage;
+  });
+  evtSource.addEventListener("rerank_done", (e) => {
+    const d = JSON.parse(e.data);
+    if (d.evidence_reordered) renderCitations(d.evidence_reordered);
+    $("statusText").textContent = `Reranked in ${d.rerank_seconds}s — synthesizing…`;
+  });
+  evtSource.addEventListener("deepened", (e) => {
+    const d = JSON.parse(e.data);
+    $("statusText").textContent = `Deepened ${d.deepened_citations.length} citation(s) with full text in ${d.deepen_seconds}s — refining…`;
   });
   evtSource.addEventListener("queries", (e) => {
     const d = JSON.parse(e.data);
@@ -227,10 +255,23 @@ function ask() {
       b.classList.remove("hidden");
     }
     if (r.metadata && r.metadata.total_seconds != null) {
-      $("timingBadge").textContent = `${r.metadata.total_seconds}s · ${r.metadata.n_pubmed||0} PubMed · ${r.metadata.n_trials||0} trials · ${r.metadata.n_preprints||0} preprints`;
+      const m = r.metadata;
+      const bits = [`${m.total_seconds}s`];
+      const counts = [];
+      if (m.n_pubmed)    counts.push(`${m.n_pubmed} PubMed`);
+      if (m.n_trials)    counts.push(`${m.n_trials} trials`);
+      if (m.n_preprints) counts.push(`${m.n_preprints} preprints`);
+      if (m.n_paperclip) counts.push(`${m.n_paperclip} paperclip`);
+      if (m.n_web)       counts.push(`${m.n_web} web`);
+      bits.push(counts.join(" · "));
+      if (m.deepened_citations && m.deepened_citations.length) bits.push(`+${m.deepened_citations.length} deepened`);
+      $("timingBadge").textContent = bits.join(" · ");
       $("timingBadge").classList.remove("hidden");
     }
-    if (r.metadata && r.metadata.from_cache) $("cacheBadge").classList.remove("hidden");
+    if (r.metadata && r.metadata.cache_hit) {
+      $("cacheBadge").textContent = `cache: ${r.metadata.cache_hit.tier}`;
+      $("cacheBadge").classList.remove("hidden");
+    }
 
     if (r.citations && r.citations.length) {
       renderCitations(r.evidence, r.citations);
@@ -269,6 +310,8 @@ function renderCitations(evidence, citations) {
     if (meta.status) metaBits.push(`Status: ${meta.status}`);
     if (meta.phases && meta.phases.length) metaBits.push(`Phase: ${meta.phases.join(", ")}`);
     if (meta.is_preprint) metaBits.push(`<span class="text-pink-700 font-medium">PREPRINT</span>`);
+    if (meta.deepened) metaBits.push(`<span class="text-purple-700 font-medium">FULL-TEXT</span>`);
+    if (typeof meta.rerank_score === "number") metaBits.push(`<span class="text-slate-600">rerank: ${meta.rerank_score.toFixed(1)}/10</span>`);
 
     const card = document.createElement("div");
     card.id = `cite-${e.id.replace(/:/g,"-").replace(/[^A-Za-z0-9-]/g,"_")}`;

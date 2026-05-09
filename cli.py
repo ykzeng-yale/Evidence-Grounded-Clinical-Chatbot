@@ -47,13 +47,25 @@ def render_pretty(r) -> str:
     if r.metadata:
         m = r.metadata
         out.append("")
-        out.append(
-            f"⏱  retrieval: {m.get('retrieval_seconds')}s | synthesis: {m.get('synthesis_seconds')}s | total: {m.get('total_seconds')}s"
-        )
-        out.append(
-            f"📚 PubMed:{m.get('n_pubmed', 0)} | Trials:{m.get('n_trials', 0)} | "
-            f"Preprints:{m.get('n_preprints', 0)} | Web:{m.get('n_web', 0)} | from_cache={m.get('from_cache')}"
-        )
+        timing = [f"retrieval: {m.get('retrieval_seconds', 0)}s",
+                  f"rerank: {m.get('rerank_seconds', 0)}s",
+                  f"synthesis: {m.get('synthesis_seconds', 0)}s",
+                  f"deepen: {m.get('deepen_seconds', 0)}s",
+                  f"total: {m.get('total_seconds', 0)}s"]
+        out.append("⏱  " + " | ".join(timing))
+        counts = [
+            f"PubMed:{m.get('n_pubmed', 0)}",
+            f"Trials:{m.get('n_trials', 0)}",
+            f"Preprints:{m.get('n_preprints', 0)}",
+            f"Paperclip:{m.get('n_paperclip', 0)}",
+            f"Web:{m.get('n_web', 0)}",
+        ]
+        out.append("📚 " + " | ".join(counts))
+        flags = []
+        if m.get("rerank_used"): flags.append("rerank")
+        if m.get("deepen_used"): flags.append(f"deepen({len(m.get('deepened_citations', []))})")
+        if m.get("cache_hit"):   flags.append(f"cache:{m['cache_hit'].get('tier')}")
+        if flags: out.append("🔧 " + " · ".join(flags))
     out.append("")
     out.append("⚠ " + r.disclaimer)
     out.append(bar)

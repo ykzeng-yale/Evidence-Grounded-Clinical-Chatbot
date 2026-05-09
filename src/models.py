@@ -3,7 +3,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-SourceType = Literal["PubMed", "ClinicalTrials.gov", "EuropePMC", "WebSearch"]
+SourceType = Literal["PubMed", "ClinicalTrials.gov", "EuropePMC", "Paperclip", "WebSearch"]
 
 
 class Evidence(BaseModel):
@@ -28,7 +28,10 @@ class AskRequest(BaseModel):
     max_pubmed: Optional[int] = None
     max_trials: Optional[int] = None
     max_preprints: Optional[int] = None
+    max_paperclip: Optional[int] = None
     use_web_search: Optional[bool] = None
+    rerank: Optional[bool] = None
+    deepen: Optional[bool] = None
     use_cache: bool = True
 
 

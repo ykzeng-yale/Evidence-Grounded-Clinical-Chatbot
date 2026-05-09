@@ -1,8 +1,10 @@
 # Evidence-Grounded Clinical Chatbot
 
-> A Python service that answers clinical questions by retrieving evidence from
-> **PubMed**, **ClinicalTrials.gov**, and **Europe PMC** (preprints), then
-> synthesizing a grounded answer with **Claude** — every claim cites a source ID.
+> A Python service that answers clinical questions with a real, multi-stage RAG
+> pipeline: live retrieval from **PubMed**, **ClinicalTrials.gov**, **Europe PMC**,
+> and **Paperclip** (8M+ paper hybrid index), Claude-as-reranker, **Firecrawl**
+> full-text deepening for the most-cited papers, and a **pgvector semantic cache**
+> on Supabase — every claim cites a verifiable source ID.
 
 **Live demo:** *(deployed to Vercel — link in repo description)*
 **Take-home assignment:** *Evidence-Grounded Clinical Chatbot, May 2026*
@@ -13,27 +15,45 @@
 
 ```
                     ┌─────────────────────────────────────────────┐
-   user question ─► │ 1. Reformulate (Claude tool_use)            │
+   user question ─► │ 0. Two-tier cache check                     │
+                    │    a) sha256 exact-match (Supabase)         │
+                    │    b) pgvector semantic match (sim ≥ 0.92)  │
+                    └────────────────────┬────────────────────────┘
+                                         ▼ miss
+                    ┌─────────────────────────────────────────────┐
+                    │ 1. Reformulate (Claude tool_use)            │
                     │    → pubmed_query, trials_query, intent     │
                     └────────────────────┬────────────────────────┘
                                          ▼
                     ┌─────────────────────────────────────────────┐
-                    │ 2. Parallel async retrieval                 │
+                    │ 2. Parallel async retrieval (5 sources)     │
                     │    ├ PubMed E-utilities (esearch + efetch)  │
                     │    ├ ClinicalTrials.gov v2 (/studies)       │
-                    │    ├ Europe PMC (preprints — bioRxiv etc.)  │
+                    │    ├ Europe PMC (preprints)                 │
+                    │    ├ Paperclip MCP (8M+ corpus, hybrid BM25 │
+                    │    │  + dense; PMC + bioRxiv + medRxiv +    │
+                    │    │  arXiv) — JSON-RPC over X-API-Key      │
                     │    └ Tavily (optional, FDA / guidelines)    │
                     └────────────────────┬────────────────────────┘
                                          ▼
                     ┌─────────────────────────────────────────────┐
-                    │ 3. Synthesize (Claude, tool_use, streaming) │
-                    │    submit_clinical_answer({                 │
-                    │      answer, key_evidence[], limitations,   │
-                    │      confidence: high|moderate|low })       │
+                    │ 3. Rerank (Claude Haiku as reranker)        │
+                    │    Score 0–10 per item, take top K          │
                     └────────────────────┬────────────────────────┘
                                          ▼
                     ┌─────────────────────────────────────────────┐
-                    │ 4. AnswerResponse + Supabase cache          │
+                    │ 4. Synthesize pass 1 (Claude, tool_use)     │
+                    │    → answer + key_evidence[] + limitations  │
+                    └────────────────────┬────────────────────────┘
+                                         ▼
+                    ┌─────────────────────────────────────────────┐
+                    │ 5. Tier B deepen (top key_evidence only)    │
+                    │    Firecrawl → PMC full text → Methods +    │
+                    │    Results sections → re-synthesize         │
+                    └────────────────────┬────────────────────────┘
+                                         ▼
+                    ┌─────────────────────────────────────────────┐
+                    │ 6. Write to BOTH cache tiers + return       │
                     └─────────────────────────────────────────────┘
 ```
 
@@ -48,15 +68,18 @@ The web UI streams Server-Sent Events so the user sees:
 
 | Decision | Rationale |
 |---|---|
-| **Direct API retrieval, no vector store** | PubMed and ClinicalTrials.gov are the *ground truth*. A vector cache would go stale and add a hallucination surface. The "RAG" is the API call itself. |
-| **Europe PMC for preprints** | The assignment requires PubMed + CT.gov; preprints from bioRxiv/medRxiv (the same corpus the open-source [paperclip](https://github.com/GXL-ai/paperclip) tool indexes) add timely signal. Europe PMC exposes them via a free public REST API — no OAuth, works in serverless. |
-| **Async parallel retrieval** | All three retrievers run simultaneously via `asyncio.gather` — total latency = max(retriever), not sum. |
-| **Tool-use for structured output** | Claude's `tool_choice` guarantees a JSON object with `answer / key_evidence / limitations / confidence`. No regex parsing, no malformed responses. |
-| **Inline citation tags `[PMID:#] / [NCT:#]`** | Cheap to enforce, easy for the UI to linkify, and trivially auditable — the eval script flags any cite ID that isn't in the retrieved evidence. |
+| **Live API retrieval as ground truth** | PubMed and ClinicalTrials.gov change daily. A pre-embedded vector store would silently serve stale trial statuses and superseded efficacy data — *dangerous* in clinical context. We treat live API calls as the canonical retrieval; vector tech is layered *on top* for rerank and cache, never as a replacement. |
+| **Paperclip MCP as a 4th source** | Hybrid BM25+dense search across 8M+ pre-indexed papers (PMC + bioRxiv + medRxiv + arXiv). Better synonym handling than raw NCBI BM25 and includes arXiv (statistical methods, ML-in-medicine) that the others miss. Called via JSON-RPC with `X-API-Key` (no OAuth dance). |
+| **Europe PMC for additional preprints** | Free public API — covers the same corpus as paperclip but without an API key, ensuring the system has at least 3 sources even if paperclip is unavailable. |
+| **Async parallel retrieval** | All retrievers run simultaneously via `asyncio.gather` — total latency = max(retriever), not sum. |
+| **Tier A: Claude-as-reranker (Haiku 4.5)** | After retrieval, score every candidate 0–10 on clinical relevance. Demotes wrong-population, wrong-drug-class, and (real example) astrophysics papers that slip in via keyword overlap. Cheap (~1s) and uses our existing Anthropic key. |
+| **Tier B: Firecrawl full-text deepening** | After pass-1 synthesis, the top 1–2 cited PMC papers get scraped for their Methods + Results sections. Pass-2 re-synthesizes with the quantitative detail abstracts omit (effect sizes, CIs, AE rates). Adds ~3s; meaningfully sharper answers. |
+| **Tier C: pgvector semantic cache** | Two-tier cache: sha256 exact-match (cheap) + pgvector cosine match (cosine ≥ 0.92). Catches paraphrases — "evidence for GLP-1 in obesity" and "semaglutide weight management" hit the same cached answer. Embeddings via Voyage AI (Anthropic-recommended), OpenAI, or Cohere. Falls back to exact-match cache when no embedding key is set. |
+| **Tool-use for structured output** | Claude's `tool_choice` guarantees JSON: `answer / key_evidence / limitations / confidence`. No regex parsing, no malformed responses. |
+| **Inline citation tags `[PMID:#] / [NCT:#] / [PMC:#] / [DOI:#] / [ARXIV:#]`** | Cheap to enforce, easy for the UI to linkify, trivially auditable — the eval script flags any cite ID that isn't in the retrieved evidence. |
 | **Mandatory `limitations` + `confidence`** | Clinical context demands honesty. If evidence is sparse or conflicting, the model must say so rather than overclaim. |
-| **Query reformulation** | A first Claude call rewrites natural questions into precise PubMed/CT.gov terms, improving recall (e.g., "weight loss drugs" → "GLP-1 receptor agonist obesity"). |
-| **Supabase cache** | Same question hits → 0 API cost, sub-100ms response. Optional and gracefully degrades. |
-| **Streaming via SSE (not WebSocket)** | One-way server→client is sufficient; SSE works through every CDN, no upgrade dance. |
+| **Query reformulation (Claude)** | A first Claude call rewrites natural questions into precise PubMed/CT.gov terms ("weight loss drugs" → "GLP-1 receptor agonist obesity"). |
+| **Streaming via SSE** | One-way server→client; works through every CDN, no upgrade dance. UI streams: status → queries → evidence → rerank_done → answer_delta → deepened → answer_delta (refined) → done. |
 | **Refusal layer for individualized advice** | Patterns like "what should I take" trip an early refusal — we educate, we don't prescribe. |
 
 ## Repository layout
@@ -203,13 +226,27 @@ RESULTS: 6/6 succeeded
 
 | Key | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | Claude synthesis |
-| `PUBMED_EMAIL`      | ✅ (NCBI policy) | Identifying email tag for E-utilities |
-| `NCBI_API_KEY`      | recommended | Lifts PubMed rate limit 3 → 10 req/s (free) |
-| `TAVILY_API_KEY`    | optional | FDA/guideline web search |
-| `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` | optional | Query cache |
+| `ANTHROPIC_API_KEY`  | ✅ | Claude synthesis + Claude-as-reranker (Haiku 4.5) |
+| `PUBMED_EMAIL`       | ✅ (NCBI policy) | Identifying email tag for E-utilities |
+| `NCBI_API_KEY`       | recommended | Lifts PubMed rate limit 3 → 10 req/s (free) |
+| `PAPERCLIP_API_KEY`  | recommended | 8M+ paper hybrid search (PMC + bioRxiv + medRxiv + arXiv) |
+| `FIRECRAWL_API_KEY`  | recommended | Tier B: full-text deepening for top citations |
+| `TAVILY_API_KEY`     | optional | Web search for FDA/guidelines |
+| `VOYAGE_API_KEY` *(or `OPENAI_API_KEY` / `COHERE_API_KEY`)* | optional | Tier C: pgvector semantic cache. Without one, semantic cache disables and exact-match cache still works. |
+| `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` | recommended | Cache backend (pgvector). Apply `scripts/supabase_setup.sql` once. |
 
 See [`.env.example`](.env.example).
+
+## Ablation evaluation
+
+`scripts/ablation_eval.py` runs each sample question through 4 configurations
+(baseline / +rerank / +deepen / +rerank+deepen) and reports latency, evidence
+counts, citation validity, and confidence per configuration — so the upgrades
+are *demonstrated* not just claimed.
+
+```
+python scripts/ablation_eval.py --questions 1 2
+```
 
 ## License
 

@@ -69,7 +69,10 @@ async def ask(req: AskRequest):
             max_pubmed=req.max_pubmed,
             max_trials=req.max_trials,
             max_preprints=req.max_preprints,
+            max_paperclip=req.max_paperclip,
             use_web_search=req.use_web_search,
+            rerank=req.rerank,
+            deepen=req.deepen,
             use_cache=req.use_cache,
         )
     except ValueError as e:
@@ -86,7 +89,10 @@ async def ask_stream(
     max_pubmed: int | None = Query(None, ge=1, le=20),
     max_trials: int | None = Query(None, ge=0, le=20),
     max_preprints: int | None = Query(None, ge=0, le=10),
+    max_paperclip: int | None = Query(None, ge=0, le=10),
     use_web_search: bool | None = Query(None),
+    rerank: bool | None = Query(None),
+    deepen: bool | None = Query(None),
     use_cache: bool = Query(True),
 ):
     """Server-Sent Events stream. Each event has shape: {type, ...payload}."""
@@ -98,7 +104,10 @@ async def ask_stream(
                 max_pubmed=max_pubmed,
                 max_trials=max_trials,
                 max_preprints=max_preprints,
+                max_paperclip=max_paperclip,
                 use_web_search=use_web_search,
+                rerank=rerank,
+                deepen=deepen,
                 use_cache=use_cache,
             ):
                 if await request.is_disconnected():
