@@ -47,6 +47,20 @@ async def health():
     return {"status": "ok", "model": pipeline.llm.model}
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Favicon is inlined as data: URL in index.html. This endpoint exists
+    only to silence the 204-vs-404 noise when browsers request /favicon.ico."""
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("User-agent: *\nAllow: /\n")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     if FRONTEND.exists():

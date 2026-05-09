@@ -38,13 +38,25 @@ _BIOMED_HINTS = re.compile(
 
 
 def needs_clinical_question_refusal(question: str) -> bool:
-    """Return True for input that's clearly not a clinical question."""
-    q = question.strip().lower()
+    """Return True for input that's clearly not a clinical question.
+
+    Heuristics (English-centric, but lenient toward CJK / other scripts):
+      - empty / pure punctuation → refuse
+      - exact match in trivial greetings set → refuse
+      - very short (<3 ASCII words) without any biomedical hint → refuse
+      - non-ASCII content (>=8 chars) → trust the LLM, don't refuse here
+    """
+    q = question.strip()
     if not q:
         return True
-    if q in _TRIVIAL:
+    q_low = q.lower()
+    if q_low in _TRIVIAL:
         return True
-    word_count = len(re.findall(r"\w+", q))
+    # If the input contains any non-ASCII (e.g., Chinese, Arabic, etc.) we
+    # don't have a regex vocabulary to validate it; defer to the LLM gate.
+    if any(ord(c) > 127 for c in q) and len(q) >= 8:
+        return False
+    word_count = len(re.findall(r"[A-Za-z][A-Za-z0-9'-]*", q))
     if word_count < 3 and not _BIOMED_HINTS.search(q):
         return True
     return False
