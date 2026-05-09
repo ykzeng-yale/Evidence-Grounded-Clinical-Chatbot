@@ -24,11 +24,11 @@ class Citation(BaseModel):
 
 
 class AskRequest(BaseModel):
-    question: str
-    max_pubmed: Optional[int] = None
-    max_trials: Optional[int] = None
-    max_preprints: Optional[int] = None
-    max_paperclip: Optional[int] = None
+    question: str = Field(..., min_length=1, max_length=10_000)
+    max_pubmed: Optional[int] = Field(default=None, ge=0, le=20)
+    max_trials: Optional[int] = Field(default=None, ge=0, le=20)
+    max_preprints: Optional[int] = Field(default=None, ge=0, le=10)
+    max_paperclip: Optional[int] = Field(default=None, ge=0, le=10)
     use_web_search: Optional[bool] = None
     rerank: Optional[bool] = None
     deepen: Optional[bool] = None
