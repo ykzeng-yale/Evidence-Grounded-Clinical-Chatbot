@@ -1,0 +1,36 @@
+[
+  {
+    "question": "What is the current evidence for GLP-1 receptor agonists in obesity management?",
+    "n_cites_in_answer": 17,
+    "unique_cited_ids": 8,
+    "valid_citations": 8,
+    "hallucinated_citations": [],
+    "n_evidence": 18,
+    "n_pubmed": 5,
+    "n_trials": 5,
+    "n_preprints": 3,
+    "confidence": "high",
+    "retrieval_s": 2.58,
+    "synthesis_s": 50.42,
+    "total_s": 67.33,
+    "answer_len": 3773,
+    "has_limitations": true
+  },
+  {
+    "question": "Are there active clinical trials for CAR-T therapy in lupus?",
+    "n_cites_in_answer": 6,
+    "unique_cited_ids": 4,
+    "valid_citations": 4,
+    "hallucinated_citations": [],
+    "n_evidence": 18,
+    "n_pubmed": 5,
+    "n_trials": 5,
+    "n_preprints": 3,
+    "confidence": "moderate",
+    "retrieval_s": 5.75,
+    "synthesis_s": 29.2,
+    "total_s": 42.33,
+    "answer_len": 3060,
+    "has_limitations": true
+  }
+]
