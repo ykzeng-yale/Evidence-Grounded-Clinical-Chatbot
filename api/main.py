@@ -131,14 +131,27 @@ async def ask_stream(
             logging.exception("stream_ask failed")
             yield {"event": "error", "data": json.dumps({"type": "error", "message": str(e)})}
 
-    # Critical headers to defeat upstream buffering on Vercel / nginx-style proxies.
-    # Without `X-Accel-Buffering: no`, Vercel Python serverless collects the whole
-    # response before sending — kills the perceived-streaming UX even though
-    # sse-starlette is yielding chunks correctly server-side.
+    # Defeat upstream buffering on Vercel / nginx-style proxies.
+    # Three layers:
+    #   1. X-Accel-Buffering: no — nginx-style hint
+    #   2. ping=1 — sse-starlette sends `: ping` keepalive every second; this
+    #      forces the buffer to flush even when our event stream is quiet
+    #   3. Padding bytes in each event's data — Vercel Python's response buffer
+    #      coalesces small writes; padding pushes each chunk past the flush
+    #      threshold so it gets sent immediately
+    async def padded():
+        async for ev in event_generator():
+            # Add 1KB of trailing whitespace to the data so each yield is a
+            # large enough write to defeat Vercel's response buffering.
+            ev = dict(ev)
+            ev["data"] = ev.get("data", "") + " " * 1024
+            yield ev
+
     return EventSourceResponse(
-        event_generator(),
+        padded(),
+        ping=1,                                 # keepalive every 1s flushes buffer
         headers={
-            "X-Accel-Buffering": "no",          # nginx / Vercel hint
+            "X-Accel-Buffering": "no",
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
         },
