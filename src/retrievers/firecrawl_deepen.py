@@ -1,9 +1,14 @@
 """Firecrawl full-text deepening.
 
 After the first synthesis pass, Claude marks 1–3 citations as `key_evidence`.
-For PMC/PubMed papers (where full text is freely available), we use Firecrawl
-to scrape the article HTML, extract the Methods + Results sections, and
-append them to the next-pass context.
+For PMC papers (where full text is freely available), we use Firecrawl to
+scrape the article HTML, extract the Methods + Results sections, and append
+them to the next-pass context.
+
+Resolution flow for citation IDs:
+  - PMC:PMC######  → use directly
+  - PMID:#         → call NCBI ID converter to map to PMC:#, skip if not in PMC
+  - Anything else  → skip (paywalled, not full-text accessible)
 
 Why this matters: PubMed abstracts often omit the dose, sample size, p-values,
 hazard ratios, and adverse-event tables that clinicians actually need. A
@@ -12,6 +17,7 @@ better quantitative answers — at the cost of ~2s of extra Firecrawl latency.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import List
@@ -22,6 +28,7 @@ from src.models import Evidence
 
 log = logging.getLogger(__name__)
 FIRECRAWL_URL = "https://api.firecrawl.dev/v2/scrape"
+NCBI_IDCONV_URL = "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/"
 
 # Sections we care about (in order of priority)
 SECTION_HEADERS = [
@@ -32,18 +39,37 @@ SECTION_HEADERS = [
 ]
 
 
-def _pmc_url_from_id(citation_id: str) -> str | None:
-    """Map PMID:### or PMC:PMC### to a freely-scrape-able PMC full-text URL."""
+def _direct_pmc_url(citation_id: str) -> str | None:
+    """Map PMC:PMC### directly. Returns None for PMID (caller must resolve via NCBI)."""
     if citation_id.startswith("PMC:"):
         pmcid = citation_id.split(":", 1)[1]
         if not pmcid.startswith("PMC"):
             pmcid = "PMC" + pmcid
         return f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
-    if citation_id.startswith("PMID:"):
-        pmid = citation_id.split(":", 1)[1]
-        # PMID landing page works but PMC has full text. We try the PMC redirect.
-        return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
     return None
+
+
+async def _resolve_pmid_to_pmc(pmids: list[str], email: str | None = None, timeout: float = 8.0) -> dict[str, str]:
+    """Batch-call NCBI ID converter to map PMID -> PMCID. Returns {pmid: pmcid}."""
+    if not pmids:
+        return {}
+    params = {"ids": ",".join(pmids), "format": "json", "tool": "egcc"}
+    if email:
+        params["email"] = email
+    out: dict[str, str] = {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
+            r = await c.get(NCBI_IDCONV_URL, params=params)
+            r.raise_for_status()
+            data = r.json()
+            for rec in data.get("records", []):
+                pmid = rec.get("pmid")
+                pmcid = rec.get("pmcid")
+                if pmid and pmcid:
+                    out[str(pmid)] = pmcid
+    except Exception as e:
+        log.debug(f"NCBI ID converter failed: {e}")
+    return out
 
 
 async def _scrape_full_text(url: str, api_key: str, timeout: float = 25.0) -> str | None:
@@ -109,48 +135,69 @@ def _extract_sections(markdown: str, max_chars: int = 4000) -> str:
 
 
 async def deepen_top_citations(
-    citations: list[dict],   # key_evidence from first synthesis: [{citation_id, summary}, ...]
+    citations: list[dict],
     evidence: list[Evidence],
     api_key: str,
     max_deepen: int = 2,
     timeout: float = 25.0,
+    pubmed_email: str | None = None,
 ) -> List[Evidence]:
-    """For up to `max_deepen` PMC/PubMed citations, fetch full text and create
-    Evidence objects of source='PubMed' with the Methods+Results appended to
-    the existing abstract. Returns the *deepened* Evidence list (NOT a merge —
-    caller decides where to insert).
+    """For up to `max_deepen` cited papers that have PMC full text available,
+    fetch via Firecrawl and return Evidence objects with Methods+Results
+    appended. Resolves PMID→PMC via NCBI ID converter.
+
+    Sources considered: PubMed, EuropePMC, Paperclip. (CT.gov + WebSearch skipped.)
     """
     if not api_key:
         return []
     by_id = {ev.id: ev for ev in evidence}
-    targets: list[Evidence] = []
-    for c in citations[:max_deepen * 3]:  # over-collect in case of non-deepen-able cites
+
+    # 1. Identify candidate citations and split into direct-PMC and needs-resolve PMID groups
+    candidates: list[tuple[Evidence, str | None]] = []  # (evidence, direct_pmc_url or None)
+    pmids_to_resolve: list[tuple[str, Evidence]] = []   # [(pmid, evidence)]
+    for c in citations[: max_deepen * 5]:  # over-collect; many won't have PMC
         cid = c.get("citation_id")
         if not cid or cid not in by_id:
             continue
         ev = by_id[cid]
-        if ev.source not in ("PubMed", "EuropePMC"):
+        if ev.source not in ("PubMed", "EuropePMC", "Paperclip"):
             continue
-        url = _pmc_url_from_id(cid)
-        if not url:
-            continue
-        targets.append(ev)
-        if len(targets) >= max_deepen:
-            break
+        direct = _direct_pmc_url(cid)
+        if direct:
+            candidates.append((ev, direct))
+        elif cid.startswith("PMID:"):
+            pmid = cid.split(":", 1)[1]
+            pmids_to_resolve.append((pmid, ev))
 
-    if not targets:
+    # 2. Batch-resolve PMIDs to PMCIDs
+    if pmids_to_resolve:
+        pmid_map = await _resolve_pmid_to_pmc([p for p, _ in pmids_to_resolve], email=pubmed_email)
+        for pmid, ev in pmids_to_resolve:
+            pmcid = pmid_map.get(pmid)
+            if pmcid:
+                if not pmcid.startswith("PMC"):
+                    pmcid = "PMC" + pmcid
+                candidates.append((ev, f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"))
+
+    if not candidates:
+        log.info("deepen: no PMC-accessible candidates among top citations")
         return []
 
+    # 3. Scrape up to max_deepen in parallel (faster than sequential)
+    targets = candidates[:max_deepen]
+    log.info(f"deepen: scraping {len(targets)} PMC URLs in parallel")
+    scrape_tasks = [_scrape_full_text(url, api_key, timeout=timeout) for _, url in targets]
+    markdowns = await asyncio.gather(*scrape_tasks, return_exceptions=True)
+
     deepened: list[Evidence] = []
-    for ev in targets:
-        url = _pmc_url_from_id(ev.id)
-        markdown = await _scrape_full_text(url, api_key, timeout=timeout)
-        if not markdown:
+    for (ev, url), md in zip(targets, markdowns):
+        if isinstance(md, Exception) or not md:
+            log.debug(f"deepen scrape failed for {ev.id}: {md if isinstance(md, Exception) else 'empty'}")
             continue
-        sections = _extract_sections(markdown)
+        sections = _extract_sections(md)
         if not sections:
+            log.debug(f"deepen: no Methods/Results sections found in {url}")
             continue
-        # Mutate the existing Evidence's content to prepend the abstract + sections
         new_content = (ev.content or "") + "\n\n--- FULL-TEXT METHODS / RESULTS (Firecrawl) ---\n" + sections
         deepened.append(Evidence(
             source=ev.source,
@@ -160,5 +207,5 @@ async def deepen_top_citations(
             url=ev.url,
             metadata={**ev.metadata, "deepened": True, "deepen_url": url},
         ))
-        log.info(f"deepened {ev.id}: +{len(sections)} chars")
+        log.info(f"deepened {ev.id}: +{len(sections)} chars from {url}")
     return deepened

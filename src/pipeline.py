@@ -36,7 +36,7 @@ from src.retrievers.firecrawl_deepen import deepen_top_citations
 from src.retrievers.paperclip import search_paperclip
 from src.retrievers.pubmed import search_pubmed
 from src.retrievers.web import search_web
-from src.safety import DISCLAIMER, needs_individual_advice_refusal
+from src.safety import DISCLAIMER, needs_clinical_question_refusal, needs_individual_advice_refusal
 from src.synthesis.llm import ClaudeSynthesizer
 from src.synthesis.rerank import rerank_evidence
 
@@ -91,7 +91,9 @@ class Pipeline:
             raise ValueError("question is required")
 
         if needs_individual_advice_refusal(question):
-            return _refusal_response(question)
+            return _refusal_response(question, kind="individual_advice")
+        if needs_clinical_question_refusal(question):
+            return _refusal_response(question, kind="non_clinical")
 
         if use_cache:
             hit = await get_cached(question)
@@ -150,6 +152,7 @@ class Pipeline:
                 evidence=evidence,
                 api_key=settings.firecrawl_api_key,
                 max_deepen=settings.deepen_top_k,
+                pubmed_email=settings.pubmed_email,
             )
             t_deepen = time.perf_counter() - t3
             if deepened:
@@ -239,7 +242,10 @@ class Pipeline:
             return
 
         if needs_individual_advice_refusal(question):
-            yield {"type": "done", "response": _refusal_response(question).model_dump()}
+            yield {"type": "done", "response": _refusal_response(question, "individual_advice").model_dump()}
+            return
+        if needs_clinical_question_refusal(question):
+            yield {"type": "done", "response": _refusal_response(question, "non_clinical").model_dump()}
             return
 
         if use_cache:
@@ -341,6 +347,7 @@ class Pipeline:
                 evidence=evidence,
                 api_key=settings.firecrawl_api_key,
                 max_deepen=settings.deepen_top_k,
+                pubmed_email=settings.pubmed_email,
             )
             t_deepen = time.perf_counter() - t3
             if deepened:
@@ -395,15 +402,26 @@ class Pipeline:
         yield {"type": "done", "response": response.model_dump()}
 
 
-def _refusal_response(question: str) -> AnswerResponse:
-    return AnswerResponse(
-        question=question,
-        answer=(
+def _refusal_response(question: str, kind: str = "individual_advice") -> AnswerResponse:
+    if kind == "non_clinical":
+        msg = (
+            "This looks like a greeting or non-clinical input. Please ask a clinical "
+            "question — for example: \"What is the evidence for GLP-1 receptor agonists "
+            "in obesity management?\" or \"Are there active CAR-T trials for lupus?\""
+        )
+        lim = "Input did not appear to be a clinical question."
+    else:
+        msg = (
             "I can't provide individualized medical recommendations. Please consult "
             "a qualified clinician about your specific situation. I can summarize "
             "published evidence on related topics if you reframe the question."
-        ),
-        limitations="Refused due to individualized-advice request.",
+        )
+        lim = "Refused due to individualized-advice request."
+    return AnswerResponse(
+        question=question,
+        answer=msg,
+        limitations=lim,
         confidence="low",
         disclaimer=DISCLAIMER,
+        metadata={"refusal": kind},
     )
