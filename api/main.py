@@ -61,7 +61,7 @@ async def robots():
     return PlainTextResponse("User-agent: *\nAllow: /\n")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def index():
     if FRONTEND.exists():
         return HTMLResponse(FRONTEND.read_text(encoding="utf-8"))
@@ -131,7 +131,18 @@ async def ask_stream(
             logging.exception("stream_ask failed")
             yield {"event": "error", "data": json.dumps({"type": "error", "message": str(e)})}
 
-    return EventSourceResponse(event_generator())
+    # Critical headers to defeat upstream buffering on Vercel / nginx-style proxies.
+    # Without `X-Accel-Buffering: no`, Vercel Python serverless collects the whole
+    # response before sending — kills the perceived-streaming UX even though
+    # sse-starlette is yielding chunks correctly server-side.
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "X-Accel-Buffering": "no",          # nginx / Vercel hint
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # --- Vercel Python serverless adapter ---
