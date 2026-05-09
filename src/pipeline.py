@@ -96,7 +96,7 @@ class Pipeline:
         if use_cache:
             cached = get_cached(question)
             if cached:
-                cached.metadata.setdefault("from_cache", True)
+                cached.metadata["from_cache"] = True
                 return cached
 
         max_pubmed = max_pubmed or settings.max_pubmed
