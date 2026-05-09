@@ -1,0 +1,26 @@
+[
+  {
+    "label": "GLP-1 in obesity",
+    "question": "What is the current evidence for GLP-1 receptor agonists in obesity management?"
+  },
+  {
+    "label": "CAR-T trials in lupus",
+    "question": "Are there active clinical trials for CAR-T therapy in lupus?"
+  },
+  {
+    "label": "Pembrolizumab adverse effects",
+    "question": "What are the common adverse effects reported for pembrolizumab?"
+  },
+  {
+    "label": "SGLT2 in HFpEF",
+    "question": "Is there evidence supporting SGLT2 inhibitors in heart failure with preserved ejection fraction?"
+  },
+  {
+    "label": "Semaglutide for NASH",
+    "question": "What does the evidence show for semaglutide in non-alcoholic steatohepatitis (NASH)?"
+  },
+  {
+    "label": "Donanemab in early Alzheimer's",
+    "question": "What is the efficacy and safety of donanemab in early Alzheimer's disease?"
+  }
+]

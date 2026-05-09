@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/main.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "api/main.py" },
+    { "src": "/health", "dest": "api/main.py" },
+    { "src": "/(.*)", "dest": "api/main.py" }
+  ],
+  "functions": {
+    "api/main.py": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  }
+}

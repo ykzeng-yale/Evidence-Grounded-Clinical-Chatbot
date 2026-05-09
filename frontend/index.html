@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Evidence-Grounded Clinical Chatbot</title>
+<meta name="description" content="A clinical question answering system grounded in PubMed and ClinicalTrials.gov, synthesized by Claude." />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        brand: { 50:'#eff6ff', 100:'#dbeafe', 500:'#2563eb', 600:'#1d4ed8', 700:'#1e40af' },
+      },
+      fontFamily: { sans: ['Inter','system-ui','sans-serif'], mono: ['"JetBrains Mono"','Menlo','monospace'] }
+    }}
+  }
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .source-PubMed       { background:#dbeafe; color:#1e40af; }
+  .source-ClinicalTrialsgov { background:#dcfce7; color:#166534; }
+  .source-EuropePMC    { background:#fce7f3; color:#9d174d; }
+  .source-WebSearch    { background:#fef3c7; color:#92400e; }
+  .conf-high     { background:#dcfce7; color:#166534; }
+  .conf-moderate { background:#fef3c7; color:#92400e; }
+  .conf-low      { background:#fee2e2; color:#991b1b; }
+  .answer-text { white-space: pre-wrap; }
+  .answer-text .cite { background:#eff6ff; color:#1d4ed8; padding:0 .25rem; border-radius:.25rem;
+                       font-family:'JetBrains Mono',monospace; font-size:.8em; cursor:pointer;
+                       transition:background .15s; }
+  .answer-text .cite:hover { background:#bfdbfe; }
+  .blink::after { content:"▍"; color:#2563eb; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  details > summary { list-style:none; cursor:pointer; }
+  details > summary::-webkit-details-marker { display:none; }
+  .pulse-dot { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,80%,100% { opacity:.3 } 40% { opacity:1 } }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+
+<header class="border-b border-slate-200 bg-white">
+  <div class="max-w-4xl mx-auto px-6 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 grid place-items-center text-white font-bold">⚕</div>
+      <div>
+        <h1 class="text-lg font-semibold leading-tight">Evidence-Grounded Clinical Chatbot</h1>
+        <p class="text-xs text-slate-500">PubMed · ClinicalTrials.gov · Europe PMC · synthesized by Claude</p>
+      </div>
+    </div>
+    <a href="https://github.com/ykzeng-yale/Evidence-Grounded-Clinical-Chatbot" target="_blank" rel="noreferrer"
+       class="text-xs text-slate-500 hover:text-slate-900 font-medium">GitHub ↗</a>
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-6 py-8">
+
+  <!-- Question composer -->
+  <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+    <label for="q" class="block text-sm font-medium mb-2">Ask a clinical question</label>
+    <textarea id="q" rows="3" placeholder="e.g., What is the current evidence for GLP-1 receptor agonists in obesity management?"
+      class="w-full resize-none rounded-lg border border-slate-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none p-3 text-sm"></textarea>
+
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+      <span class="text-xs text-slate-500 mr-1">Try:</span>
+      <div id="samples" class="flex flex-wrap gap-2"></div>
+    </div>
+
+    <div class="flex items-center justify-between mt-4 gap-3 flex-wrap">
+      <div class="flex items-center gap-3 text-xs text-slate-500">
+        <label class="inline-flex items-center gap-1 cursor-pointer">
+          <input type="checkbox" id="webSearch" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+          Include FDA/guideline web search
+        </label>
+        <label class="inline-flex items-center gap-1 cursor-pointer">
+          <input type="checkbox" id="useCache" checked class="rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+          Use cache
+        </label>
+      </div>
+      <button id="askBtn" class="px-5 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium disabled:bg-slate-300 disabled:cursor-not-allowed inline-flex items-center gap-2">
+        <span id="askBtnText">Get evidence-grounded answer</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- Status / progress -->
+  <section id="status" class="hidden mt-6 bg-white rounded-2xl border border-slate-200 p-4 text-sm">
+    <div class="flex items-center gap-2 text-slate-700">
+      <span class="pulse-dot">●</span>
+      <span id="statusText">Reformulating query…</span>
+    </div>
+    <div id="queryEcho" class="hidden mt-2 text-xs text-slate-500 font-mono"></div>
+  </section>
+
+  <!-- Answer -->
+  <section id="answerCard" class="hidden mt-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-base font-semibold">Answer</h2>
+      <div class="flex items-center gap-2 text-xs">
+        <span id="confidenceBadge" class="hidden conf-moderate px-2 py-0.5 rounded-full font-medium"></span>
+        <span id="timingBadge" class="hidden text-slate-500"></span>
+        <span id="cacheBadge" class="hidden bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">cached</span>
+      </div>
+    </div>
+    <div id="answer" class="answer-text text-slate-800 text-[15px] leading-relaxed"></div>
+
+    <div id="limitationsBlock" class="hidden mt-5 bg-amber-50 border border-amber-200 rounded-lg p-3">
+      <div class="text-xs font-semibold text-amber-800 mb-1">⚠ Limitations</div>
+      <div id="limitations" class="text-sm text-amber-900"></div>
+    </div>
+  </section>
+
+  <!-- Citations -->
+  <section id="citationsCard" class="hidden mt-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+    <h2 class="text-base font-semibold mb-3">Citations <span id="citationsCount" class="text-xs text-slate-400 font-normal ml-1"></span></h2>
+    <div id="citations" class="space-y-3"></div>
+  </section>
+
+  <!-- Disclaimer -->
+  <section id="disclaimerCard" class="hidden mt-6 text-xs text-slate-500 leading-relaxed border-t border-slate-200 pt-4">
+    <strong class="text-slate-700">Disclaimer:</strong> <span id="disclaimer"></span>
+  </section>
+
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const escapeHtml = s => (s ?? "").toString()
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+
+// Linkify citation tags like [PMID:12345], [NCT12345], [WEB:1], [PMC:PMC123], [DOI:...]
+function linkifyCitations(text) {
+  if (!text) return "";
+  return escapeHtml(text).replace(
+    /\[(PMID|NCT|PMC|DOI|WEB|EPMC):([^\]\s]+)\]/g,
+    (_, kind, id) => `<a class="cite" data-cite="${kind}:${id}" href="#cite-${kind}-${id.replace(/[^A-Za-z0-9]/g,'_')}">[${kind}:${id}]</a>`
+  );
+}
+
+function sourceClass(src) { return "source-" + src.replace(/[^A-Za-z0-9]/g, ""); }
+
+async function loadSamples() {
+  try {
+    const r = await fetch("/api/sample-questions");
+    const samples = await r.json();
+    const wrap = $("samples");
+    samples.forEach(s => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "px-2.5 py-1 text-xs rounded-full bg-slate-100 hover:bg-brand-100 text-slate-700 hover:text-brand-700";
+      b.textContent = s.label;
+      b.onclick = () => { $("q").value = s.question; $("q").focus(); };
+      wrap.appendChild(b);
+    });
+  } catch (e) { /* non-fatal */ }
+}
+
+let evtSource = null;
+function ask() {
+  const q = $("q").value.trim();
+  if (!q) { $("q").focus(); return; }
+  if (evtSource) { evtSource.close(); evtSource = null; }
+
+  // Reset UI
+  $("askBtn").disabled = true; $("askBtnText").textContent = "Working…";
+  $("status").classList.remove("hidden");
+  $("statusText").textContent = "Reformulating query…";
+  $("queryEcho").classList.add("hidden");
+  $("answerCard").classList.add("hidden"); $("answer").innerHTML = "";
+  $("limitationsBlock").classList.add("hidden"); $("limitations").textContent = "";
+  $("confidenceBadge").classList.add("hidden");
+  $("timingBadge").classList.add("hidden");
+  $("cacheBadge").classList.add("hidden");
+  $("citationsCard").classList.add("hidden"); $("citations").innerHTML = "";
+  $("disclaimerCard").classList.add("hidden");
+
+  const params = new URLSearchParams({
+    q,
+    use_web_search: $("webSearch").checked ? "true" : "false",
+    use_cache: $("useCache").checked ? "true" : "false",
+  });
+  evtSource = new EventSource(`/api/ask/stream?${params.toString()}`);
+
+  evtSource.addEventListener("status", (e) => {
+    const d = JSON.parse(e.data);
+    const map = { reformulating:"Reformulating query…", retrieving:"Searching PubMed, ClinicalTrials.gov, Europe PMC…",
+                  synthesizing:"Synthesizing answer with Claude…", cache_hit:"Cache hit — replaying answer…" };
+    $("statusText").textContent = map[d.stage] || d.stage;
+  });
+  evtSource.addEventListener("queries", (e) => {
+    const d = JSON.parse(e.data);
+    $("queryEcho").classList.remove("hidden");
+    $("queryEcho").textContent = `intent=${d.intent ?? "?"}  ·  pubmed: "${d.pubmed_query}"  ·  trials: "${d.trials_query}"`;
+  });
+  evtSource.addEventListener("evidence", (e) => {
+    const d = JSON.parse(e.data);
+    renderCitations(d.evidence);
+    $("statusText").textContent = `Retrieved ${d.evidence.length} evidence items in ${d.retrieval_seconds}s — synthesizing…`;
+  });
+  evtSource.addEventListener("answer_delta", (e) => {
+    const d = JSON.parse(e.data);
+    $("answerCard").classList.remove("hidden");
+    if (d.text_partial !== undefined) {
+      $("answer").innerHTML = linkifyCitations(d.text_partial) + '<span class="blink"></span>';
+    } else if (d.text) {
+      $("answer").insertAdjacentHTML("beforeend", linkifyCitations(d.text));
+    }
+  });
+  evtSource.addEventListener("done", (e) => {
+    const d = JSON.parse(e.data);
+    const r = d.response;
+    $("answer").innerHTML = linkifyCitations(r.answer);
+
+    if (r.limitations) {
+      $("limitationsBlock").classList.remove("hidden");
+      $("limitations").textContent = r.limitations;
+    }
+    if (r.confidence) {
+      const b = $("confidenceBadge");
+      b.className = `conf-${r.confidence} px-2 py-0.5 rounded-full font-medium`;
+      b.textContent = `confidence: ${r.confidence}`;
+      b.classList.remove("hidden");
+    }
+    if (r.metadata && r.metadata.total_seconds != null) {
+      $("timingBadge").textContent = `${r.metadata.total_seconds}s · ${r.metadata.n_pubmed||0} PubMed · ${r.metadata.n_trials||0} trials · ${r.metadata.n_preprints||0} preprints`;
+      $("timingBadge").classList.remove("hidden");
+    }
+    if (r.metadata && r.metadata.from_cache) $("cacheBadge").classList.remove("hidden");
+
+    if (r.citations && r.citations.length) {
+      renderCitations(r.evidence, r.citations);
+      $("citationsCount").textContent = `(${r.citations.length})`;
+    }
+    if (r.disclaimer) {
+      $("disclaimer").textContent = r.disclaimer;
+      $("disclaimerCard").classList.remove("hidden");
+    }
+
+    $("status").classList.add("hidden");
+    $("askBtn").disabled = false; $("askBtnText").textContent = "Get evidence-grounded answer";
+    if (evtSource) { evtSource.close(); evtSource = null; }
+  });
+  evtSource.addEventListener("error", (e) => {
+    let msg = "Stream error";
+    try { msg = JSON.parse(e.data).message || msg; } catch {}
+    $("statusText").textContent = "Error: " + msg;
+    $("askBtn").disabled = false; $("askBtnText").textContent = "Get evidence-grounded answer";
+    if (evtSource) { evtSource.close(); evtSource = null; }
+  });
+}
+
+function renderCitations(evidence, citations) {
+  $("citationsCard").classList.remove("hidden");
+  const summaryById = {};
+  if (citations) for (const c of citations) if (c.summary) summaryById[c.id] = c.summary;
+  const wrap = $("citations");
+  wrap.innerHTML = "";
+  evidence.forEach((e) => {
+    const anchor = e.id.replace(/[^A-Za-z0-9]/g, "_").replace(/_+/g,"_");
+    const meta = e.metadata || {};
+    const metaBits = [];
+    if (meta.year) metaBits.push(meta.year);
+    if (meta.journal) metaBits.push(meta.journal);
+    if (meta.status) metaBits.push(`Status: ${meta.status}`);
+    if (meta.phases && meta.phases.length) metaBits.push(`Phase: ${meta.phases.join(", ")}`);
+    if (meta.is_preprint) metaBits.push(`<span class="text-pink-700 font-medium">PREPRINT</span>`);
+
+    const card = document.createElement("div");
+    card.id = `cite-${e.id.replace(/:/g,"-").replace(/[^A-Za-z0-9-]/g,"_")}`;
+    card.className = "border border-slate-200 rounded-lg p-3 hover:border-brand-300 transition";
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-2 mb-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="${sourceClass(e.source)} px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide">${e.source}</span>
+          <a href="${e.url}" target="_blank" rel="noreferrer" class="text-xs font-mono text-brand-600 hover:underline">${e.id}</a>
+        </div>
+      </div>
+      <a href="${e.url}" target="_blank" rel="noreferrer" class="block text-sm font-medium text-slate-900 hover:text-brand-700">${escapeHtml(e.title)}</a>
+      ${metaBits.length ? `<div class="text-xs text-slate-500 mt-1">${metaBits.join(" · ")}</div>` : ""}
+      ${summaryById[e.id] ? `<div class="text-xs text-brand-700 mt-1 italic">"${escapeHtml(summaryById[e.id])}"</div>` : ""}
+      ${e.content ? `<details class="mt-2"><summary class="text-xs text-slate-500 hover:text-slate-700">Show abstract</summary><p class="mt-1 text-xs text-slate-600 leading-relaxed">${escapeHtml(e.content.substring(0, 1500))}${e.content.length>1500?"…":""}</p></details>` : ""}
+    `;
+    wrap.appendChild(card);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadSamples();
+  $("askBtn").addEventListener("click", ask);
+  $("q").addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
+  });
+});
+</script>
+</body>
+</html>
