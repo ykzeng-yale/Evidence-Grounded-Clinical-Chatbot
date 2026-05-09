@@ -44,7 +44,88 @@ SAMPLES = ROOT / "examples" / "sample_questions.json"
 
 @app.get("/health")
 async def health():
+    """Lightweight liveness check — returns 200 if the process is up.
+    For dependency status (Anthropic / Supabase / retrievers) hit /health/deep."""
     return {"status": "ok", "model": pipeline.llm.model}
+
+
+@app.get("/health/deep")
+async def health_deep():
+    """Active probe of all upstream dependencies. Useful for uptime monitors
+    that want to know not just 'process alive' but 'system functional'.
+    Each probe has a 4s timeout so total response stays <12s in worst case."""
+    import asyncio as _a
+    import httpx as _h
+    from src.cache import _get_client
+    from src.config import settings as _s
+
+    async def probe_pubmed() -> dict:
+        try:
+            async with _h.AsyncClient(timeout=4) as c:
+                r = await c.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi",
+                                params={"retmode": "json", "tool": "egcc",
+                                        "email": _s.pubmed_email})
+                return {"ok": r.status_code == 200, "status": r.status_code}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:80]}
+
+    async def probe_clinicaltrials() -> dict:
+        try:
+            async with _h.AsyncClient(timeout=4) as c:
+                r = await c.get("https://clinicaltrials.gov/api/v2/studies",
+                                params={"pageSize": 1, "format": "json"})
+                return {"ok": r.status_code == 200, "status": r.status_code}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:80]}
+
+    async def probe_paperclip() -> dict:
+        if not _s.paperclip_api_key:
+            return {"ok": False, "error": "no api key"}
+        try:
+            async with _h.AsyncClient(timeout=4) as c:
+                r = await c.post("https://paperclip.gxl.ai/mcp",
+                                 headers={"X-API-Key": _s.paperclip_api_key,
+                                          "Accept": "application/json, text/event-stream",
+                                          "Content-Type": "application/json"},
+                                 json={"jsonrpc": "2.0", "id": 1,
+                                       "method": "tools/list", "params": {}})
+                return {"ok": r.status_code == 200, "status": r.status_code}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:80]}
+
+    async def probe_anthropic() -> dict:
+        try:
+            async with _h.AsyncClient(timeout=4) as c:
+                r = await c.get("https://api.anthropic.com/v1/messages",
+                                headers={"x-api-key": _s.anthropic_api_key,
+                                         "anthropic-version": "2023-06-01"})
+                # 401/405 means reachable + auth working but wrong method/no body — both fine for liveness
+                return {"ok": r.status_code in (200, 400, 401, 405), "status": r.status_code}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:80]}
+
+    def probe_supabase() -> dict:
+        sb = _get_client()
+        if not sb:
+            return {"ok": False, "error": "not configured"}
+        try:
+            sb.table("query_cache").select("question_hash").limit(1).execute()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:80]}
+
+    pm, ct, pc, an = await _a.gather(
+        probe_pubmed(), probe_clinicaltrials(), probe_paperclip(), probe_anthropic(),
+    )
+    sb = await _a.to_thread(probe_supabase)
+
+    deps = {"pubmed": pm, "clinicaltrials": ct, "paperclip": pc, "anthropic": an, "supabase": sb}
+    overall_ok = all(d.get("ok", False) for k, d in deps.items() if k in ("pubmed", "clinicaltrials", "anthropic"))
+    return {
+        "status": "ok" if overall_ok else "degraded",
+        "model": pipeline.llm.model,
+        "deps": deps,
+    }
 
 
 @app.get("/favicon.ico", include_in_schema=False)

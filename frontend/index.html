@@ -4,8 +4,22 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Evidence-Grounded Clinical Chatbot</title>
-<meta name="description" content="A clinical question answering system grounded in PubMed and ClinicalTrials.gov, synthesized by Claude." />
+<meta name="description" content="A clinical question answering system that retrieves evidence from PubMed, ClinicalTrials.gov, Europe PMC and Paperclip, then synthesizes a grounded answer with Claude. Every claim cites a verifiable source." />
+<meta name="theme-color" content="#2563eb" />
+<link rel="canonical" href="https://evidence-grounded-clinical-chatbot.vercel.app/" />
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232563eb'/%3E%3Ctext x='50' y='68' text-anchor='middle' font-size='60' fill='white' font-family='system-ui'%3E⚕%3C/text%3E%3C/svg%3E">
+
+<!-- Open Graph (Facebook, LinkedIn, etc.) -->
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://evidence-grounded-clinical-chatbot.vercel.app/" />
+<meta property="og:title" content="Evidence-Grounded Clinical Chatbot" />
+<meta property="og:description" content="Clinical Q&A grounded in PubMed + ClinicalTrials.gov + Europe PMC + Paperclip, synthesized by Claude. Every claim cites a verifiable source." />
+<meta property="og:site_name" content="Evidence-Grounded Clinical Chatbot" />
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="Evidence-Grounded Clinical Chatbot" />
+<meta name="twitter:description" content="Clinical Q&A grounded in PubMed + ClinicalTrials.gov + Europe PMC + Paperclip, synthesized by Claude." />
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
   tailwind.config = {
@@ -306,11 +320,36 @@ function ask() {
     if (evtSource) { evtSource.close(); evtSource = null; }
   });
   evtSource.addEventListener("error", (e) => {
-    let msg = "Stream error";
+    let msg = "Connection lost";
     try { msg = JSON.parse(e.data).message || msg; } catch {}
-    $("statusText").textContent = "Error: " + msg;
+    // EventSource fires `error` on any disconnect. Distinguish completed-then-closed
+    // (which we treat as success silently) vs. a true mid-stream failure.
+    if (evtSource && evtSource.readyState === EventSource.CLOSED) {
+      // If we already received `done`, the cleanup happened in the done handler.
+      // If not, surface the disconnect to the user.
+      if (!$("answerCard").classList.contains("hidden") && $("answer").innerText.length > 100) {
+        // Looks like answer was streaming and got cut — show a subtle warning
+        $("statusText").textContent = "⚠ Stream ended early — partial answer above";
+        $("status").classList.remove("hidden");
+      } else {
+        $("statusText").textContent = "✗ " + msg + " — please try again";
+        $("status").classList.remove("hidden");
+      }
+    }
     $("askBtn").disabled = false; $("askBtnText").textContent = "Get evidence-grounded answer";
     if (evtSource) { evtSource.close(); evtSource = null; }
+  });
+
+  // Stream stall watchdog: if no event arrives for 90s, warn the user.
+  let lastEventTime = Date.now();
+  const stallChecker = setInterval(() => {
+    if (!evtSource) { clearInterval(stallChecker); return; }
+    if (Date.now() - lastEventTime > 90000) {
+      $("statusText").textContent = "⌛ Slow response — Claude may still be synthesizing…";
+    }
+  }, 5000);
+  ["status", "queries", "evidence", "answer_delta", "rerank_done", "deepened", "done"].forEach(ev => {
+    evtSource.addEventListener(ev, () => { lastEventTime = Date.now(); });
   });
 }
 

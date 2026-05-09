@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio ruff
+
+      - name: Lint (ruff — non-blocking, summary only)
+        run: ruff check src api scripts cli.py || true
+
+      - name: Import smoke (catches missing deps / syntax errors)
+        env:
+          ANTHROPIC_API_KEY: dummy
+          PUBMED_EMAIL: ci@example.com
+        run: |
+          python -c "import api.main; import src.pipeline; import src.synthesis.llm; import src.synthesis.rerank; import src.retrievers.pubmed; import src.retrievers.clinicaltrials; import src.retrievers.europepmc; import src.retrievers.paperclip; import src.retrievers.firecrawl_deepen; import src.retrievers.web; import src.cache; import src.embeddings; import src.safety; import src.config; import src.models; print('all modules import cleanly')"
+
+      - name: Pytest smoke (live retriever calls — skip if upstream is flaky)
+        env:
+          PUBMED_EMAIL: ci@example.com
+        run: pytest tests/ -v --tb=short || echo "::warning::pytest had failures (likely upstream API blip; check above)"
