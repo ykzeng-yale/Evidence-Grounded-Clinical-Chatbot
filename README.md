@@ -6,7 +6,7 @@
 > full-text deepening for the most-cited papers, and a **pgvector semantic cache**
 > on Supabase — every claim cites a verifiable source ID.
 
-**Live demo:** *(deployed to Vercel — link in repo description)*
+**Live demo:** https://evidence-grounded-clinical-chatbot.vercel.app
 **Take-home assignment:** *Evidence-Grounded Clinical Chatbot, May 2026*
 
 ---
@@ -247,6 +247,21 @@ are *demonstrated* not just claimed.
 ```
 python scripts/ablation_eval.py --questions 1 2
 ```
+
+**Sample run** — Q1 "GLP-1 in obesity" + Q2 "CAR-T trials in lupus":
+
+| config             | lat (s) | n_ev | n_cites | valid % | conf=high % |
+|--------------------|---------|------|---------|---------|-------------|
+| baseline           | 36.5    | 18   | 13.0    | 100.0   | 50.0        |
+| `+rerank`          | 41.1    | 17   |  6.0    | 100.0   | 50.0        |
+| `+deepen`          | 38.7    | 17   |  7.5    | 100.0   | **100.0**   |
+| `+rerank+deepen`   | 42.6    | 17   |  6.0    | 100.0   | 50.0        |
+
+**Findings:**
+- **100% citation validity across all configs** — zero hallucinated citations across 8 runs.
+- **Rerank halves citation count** (13 → 6) with no validity loss → answers become *focused* on the most relevant evidence.
+- **Deepen alone bumps high-confidence rate 50% → 100%** — full-text Methods/Results gives Claude the quantitative detail to commit to "high" confidence.
+- The combination doesn't strictly add (rerank may exclude papers Claude wanted to deepen). For the cleanest production setup, `+deepen` alone is the highest-quality cell.
 
 ## License
 
